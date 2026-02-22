@@ -1,0 +1,50 @@
+(executable
+ (name mfat)
+ (modules mfat)
+ (public_name mfat)
+ (libraries unix mfat make ls cat write mkdir rm defrag cmdliner))
+
+(library
+ (name fs)
+ (modules fs)
+ (public_name mfat.unix)
+ (foreign_stubs
+  (language c)
+  (flags :standard "-Wall" "-Wshadow" "-Wpointer-arith" "-Wcast-qual" "-Wsign-compare")
+  (names fs))
+ (libraries unix mfat))
+
+(library
+ (name make)
+ (modules make)
+ (libraries mfat.unix cmdliner))
+
+(library
+ (name ls)
+ (modules ls)
+ (libraries mfat.unix cmdliner))
+
+(library
+ (name cat)
+ (modules cat)
+ (libraries mfat.unix cmdliner))
+
+(library
+ (name write)
+ (modules write)
+ (libraries mfat.unix cmdliner))
+
+(library
+ (name mkdir)
+ (modules mkdir)
+ (libraries mfat.unix cmdliner))
+
+(library
+ (name rm)
+ (modules rm)
+ (libraries mfat.unix cmdliner))
+
+(library
+ (name defrag)
+ (modules defrag)
+ (libraries make mfat.unix cmdliner))

@@ -1,0 +1,4 @@
+(library
+ (name mfat)
+ (public_name mfat)
+ (libraries fmt mkernel cachet bstr))
