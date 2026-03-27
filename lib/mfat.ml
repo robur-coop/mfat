@@ -163,8 +163,10 @@ module Dir (Blk : BLOCK) = struct
     let chk = (((chk land 1) lsl 7) + (chk lsr 1) + name_8.![4]) land 0xff in
     let chk = (((chk land 1) lsl 7) + (chk lsr 1) + name_8.![5]) land 0xff in
     let chk = (((chk land 1) lsl 7) + (chk lsr 1) + name_8.![6]) land 0xff in
+    let chk = (((chk land 1) lsl 7) + (chk lsr 1) + name_8.![7]) land 0xff in
     let chk = (((chk land 1) lsl 7) + (chk lsr 1) + ext_3.![0]) land 0xff in
     let chk = (((chk land 1) lsl 7) + (chk lsr 1) + ext_3.![1]) land 0xff in
+    let chk = (((chk land 1) lsl 7) + (chk lsr 1) + ext_3.![2]) land 0xff in
     chk
 
   (* Extract UCS-2 characters from an LFN entry and convert to UTF-8 bytes.
