@@ -4,5 +4,5 @@
 
 (cram
   (applies_to linux)
-  (enabled_if (and %{env:TEST_LINUX=false} %{bin-available:mkfs.fat})
+  (enabled_if (and %{env:TEST_LINUX=false} %{bin-available:mkfs.fat}))
   (deps %{bin:mfat} setup.sh))
