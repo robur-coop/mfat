@@ -6,3 +6,7 @@
   (applies_to linux)
   (enabled_if (and %{env:TEST_LINUX=false} %{bin-available:mkfs.fat}))
   (deps %{bin:mfat} setup.sh))
+
+(test
+  (name test)
+  (libraries alcotest mfat mfat.bos))

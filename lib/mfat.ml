@@ -104,6 +104,19 @@ module Fat (Blk : BLOCK) = struct
     in
     go [] start
 
+  let follow_chain_seq cache bpb start =
+    let rec go cluster () =
+      if Int32.unsigned_compare cluster eoc_min >= 0 then Seq.Nil
+      else if cluster = free then Seq.Nil
+      else
+        let next =
+          let next = read_entry cache bpb cluster in
+          go next
+        in
+        Seq.Cons (cluster, next)
+    in
+    go start
+
   let alloc_cluster blk cache bpb =
     let total_data_clusters =
       (Int32.to_int bpb.total_sectors_32
@@ -711,7 +724,23 @@ module Path (Blk : BLOCK) = struct
         Ok (dir_cluster, Some raw)
 end
 
-module Make (Blk : BLOCK) = struct
+module type S = sig
+  type blk
+
+  val create : blk -> (blk t, [> `Msg of string ]) result
+  val ls : blk t -> string -> (entry list, [> `Msg of string ]) result
+  val read : blk t -> string -> (string, [> `Msg of string ]) result
+  val seq : blk t -> string -> (string Seq.t, [> `Msg of string ]) result
+  val write : blk t -> string -> string -> (unit, [> `Msg of string ]) result
+  val mkdir : blk t -> string -> (unit, [> `Msg of string ]) result
+  val remove : blk t -> string -> (unit, [> `Msg of string ]) result
+  val exists : blk t -> string -> bool
+  val stat : blk t -> string -> (entry, [> `Msg of string ]) result
+end
+
+module Make (Blk : BLOCK) : S with type blk = Blk.t = struct
+  type blk = Blk.t
+
   module Fat = Fat (Blk)
   module Dir = Dir (Blk)
   module Path = Path (Blk)
@@ -747,19 +776,49 @@ module Make (Blk : BLOCK) = struct
             let clusters =
               Fat.follow_chain t.cache t.bpb raw.Dir.first_cluster
             in
-            let cluster_sz = Bpb.cluster_size t.bpb in
+            let cluster_size = Bpb.cluster_size t.bpb in
             let buf = Buffer.create size in
-            let remaining = ref size in
+            let rem = ref size in
             List.iter
               (fun cl ->
-                if !remaining > 0 then (
+                if !rem > 0 then begin
                   let base = Bpb.cluster_offset t.bpb cl in
-                  let to_read = min !remaining cluster_sz in
+                  let to_read = min !rem cluster_size in
                   let s = Cachet.get_string t.cache ~len:to_read base in
                   Buffer.add_string buf s;
-                  remaining := !remaining - to_read))
+                  rem := !rem - to_read
+                end)
               clusters;
             Ok (Buffer.contents buf)
+
+  let seq t path =
+    let* _, v = Path.resolve t.cache t.bpb path in
+    match v with
+    | None -> error_msgf "%s: is root directory" path
+    | Some raw ->
+        if raw.Dir.attr land Dir.attr_directory <> 0 then
+          error_msgf "%s: is a directory" path
+        else
+          let size = Int32.to_int raw.Dir.file_size in
+          if size = 0 then Ok Seq.empty
+          else
+            let seq =
+              Fat.follow_chain_seq t.cache t.bpb raw.Dir.first_cluster
+            in
+            let cluster_size = Bpb.cluster_size t.bpb in
+            let rem = ref size in
+            let fn cl =
+              if !rem > 0 then begin
+                let base = Bpb.cluster_offset t.bpb cl in
+                let to_read = Int.min !rem cluster_size in
+                let str = Cachet.get_string t.cache ~len:to_read base in
+                rem := !rem - to_read;
+                if to_read > 0 then Some str else None
+              end
+              else None
+            in
+            let seq = Seq.filter_map fn seq in
+            Ok seq
 
   let write_data_to_clusters blk cache bpb clusters data =
     let cluster_sz = Bpb.cluster_size bpb in

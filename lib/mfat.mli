@@ -9,13 +9,18 @@ module type BLOCK = sig
   val write : t -> ?src_off:int -> dst_off:int -> Bstr.t -> unit
 end
 
-module Make (Blk : BLOCK) : sig
-  val create : Blk.t -> (Blk.t t, [> `Msg of string ]) result
-  val ls : Blk.t t -> string -> (entry list, [> `Msg of string ]) result
-  val read : Blk.t t -> string -> (string, [> `Msg of string ]) result
-  val write : Blk.t t -> string -> string -> (unit, [> `Msg of string ]) result
-  val mkdir : Blk.t t -> string -> (unit, [> `Msg of string ]) result
-  val remove : Blk.t t -> string -> (unit, [> `Msg of string ]) result
-  val exists : Blk.t t -> string -> bool
-  val stat : Blk.t t -> string -> (entry, [> `Msg of string ]) result
+module type S = sig
+  type blk
+
+  val create : blk -> (blk t, [> `Msg of string ]) result
+  val ls : blk t -> string -> (entry list, [> `Msg of string ]) result
+  val read : blk t -> string -> (string, [> `Msg of string ]) result
+  val seq : blk t -> string -> (string Seq.t, [> `Msg of string ]) result
+  val write : blk t -> string -> string -> (unit, [> `Msg of string ]) result
+  val mkdir : blk t -> string -> (unit, [> `Msg of string ]) result
+  val remove : blk t -> string -> (unit, [> `Msg of string ]) result
+  val exists : blk t -> string -> bool
+  val stat : blk t -> string -> (entry, [> `Msg of string ]) result
 end
+
+module Make (Blk : BLOCK) : S with type blk = Blk.t
