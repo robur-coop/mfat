@@ -731,8 +731,12 @@ module type S = sig
   val create : blk -> (blk t, [> `Msg of string ]) result
   val ls : blk t -> string -> (entry list, [> `Msg of string ]) result
   val read : blk t -> string -> (string, [> `Msg of string ]) result
-  val seq : blk t -> string -> (string Seq.t, [> `Msg of string ]) result
+  val to_seq : blk t -> string -> (string Seq.t, [> `Msg of string ]) result
   val write : blk t -> string -> string -> (unit, [> `Msg of string ]) result
+
+  val of_seq :
+    blk t -> string -> string Seq.t -> (unit, [> `Msg of string ]) result
+
   val mkdir : blk t -> string -> (unit, [> `Msg of string ]) result
   val remove : blk t -> string -> (unit, [> `Msg of string ]) result
   val exists : blk t -> string -> bool
@@ -871,7 +875,7 @@ module Make (Blk : BLOCK) : S with type blk = Blk.t = struct
               clusters;
             Ok (Buffer.contents buf)
 
-  let seq t path =
+  let to_seq t path =
     let* _, v = Path.resolve t.cache t.bpb path in
     match v with
     | None -> error_msgf "%s: is root directory" path
@@ -934,13 +938,62 @@ module Make (Blk : BLOCK) : S with type blk = Blk.t = struct
     in
     List.iter fn clusters
 
-  let write t path data =
+  let write_chunks_to_clusters blk cache bpb clusters chunks total_len =
+    let cluster_sz = Bpb.cluster_size bpb in
+    let pagesize = Blk.pagesize blk in
+    let chunks = ref chunks in
+    let chunk_off = ref 0 in
+    let global_off = ref 0 in
+    let next_bytes dst dst_off len =
+      let written = ref 0 in
+      while !written < len do
+        match !chunks with
+        | [] -> written := len
+        | chunk :: rest ->
+            let avail = String.length chunk - !chunk_off in
+            let n = min avail (len - !written) in
+            Bstr.blit_from_string chunk ~src_off:!chunk_off dst
+              ~dst_off:(dst_off + !written) ~len:n;
+            written := !written + n;
+            chunk_off := !chunk_off + n;
+            if !chunk_off >= String.length chunk then begin
+              chunks := rest;
+              chunk_off := 0
+            end
+      done
+    in
+    let fn cl =
+      if !global_off < total_len then begin
+        let base = Bpb.cluster_offset bpb cl in
+        let to_write = min (total_len - !global_off) cluster_sz in
+        let written = ref 0 in
+        while !written < to_write do
+          let page_base = base + !written in
+          let page_aligned = page_base / pagesize * pagesize in
+          let buf = Bstr.create pagesize in
+          if page_base <> page_aligned || to_write - !written < pagesize then
+            Blk.read blk ~src_off:page_aligned buf
+          else Bstr.fill buf '\000';
+          let in_page_off = page_base - page_aligned in
+          let in_page_len =
+            min (pagesize - in_page_off) (to_write - !written)
+          in
+          next_bytes buf in_page_off in_page_len;
+          Blk.write blk ~dst_off:page_aligned buf;
+          Cachet.invalidate cache ~off:page_aligned ~len:pagesize;
+          written := !written + in_page_len
+        done;
+        global_off := !global_off + to_write
+      end
+    in
+    List.iter fn clusters
+
+  let write t path ~len ~alloc_and_write =
     let* parent_parts, name = Path.parent_and_name path in
     let* dir_cluster = Path.resolve_dir t.cache t.bpb parent_parts in
-    let data_len = String.length data in
     let cluster_sz = Bpb.cluster_size t.bpb in
     let needed_clusters =
-      if data_len = 0 then 0 else (data_len + cluster_sz - 1) / cluster_sz
+      if len = 0 then 0 else (len + cluster_sz - 1) / cluster_sz
     in
     (* Check if file already exists *)
     let existing = Dir.find_in_dir t.cache t.bpb dir_cluster name in
@@ -968,10 +1021,9 @@ module Make (Blk : BLOCK) : S with type blk = Blk.t = struct
     in
     chain clusters;
     (* Write data *)
-    if data_len > 0 then
-      write_data_to_clusters t.blk t.cache t.bpb clusters data;
+    alloc_and_write clusters;
     let first_cluster = match clusters with [] -> 0l | c :: _ -> c in
-    let file_size = Int32.of_int data_len in
+    let file_size = Int32.of_int len in
     match existing with
     | Some _ ->
         Dir.update_entry t.blk t.cache t.bpb dir_cluster name ~first_cluster
@@ -979,6 +1031,25 @@ module Make (Blk : BLOCK) : S with type blk = Blk.t = struct
     | None ->
         Dir.add_entry t.blk t.cache t.bpb dir_cluster ~name ~attr:0x20
           ~first_cluster ~file_size
+
+  let of_seq t path chunks =
+    let chunks = List.of_seq chunks in
+    let len =
+      let fn acc str = acc + String.length str in
+      List.fold_left fn 0 chunks
+    in
+    let alloc_and_write cls =
+      if len > 0 then
+        write_chunks_to_clusters t.blk t.cache t.bpb cls chunks len
+    in
+    write t path ~len ~alloc_and_write
+
+  let write t path data =
+    let len = String.length data in
+    let alloc_and_write cls =
+      if len > 0 then write_data_to_clusters t.blk t.cache t.bpb cls data
+    in
+    write t path ~len ~alloc_and_write
 
   let mkdir t path =
     let* parent_parts, name = Path.parent_and_name path in
