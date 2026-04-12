@@ -69,7 +69,7 @@ let run fpath =
   let total_sectors = read_total_sectors fd in
   let total_size = total_sectors * bytes_per_sector in
   Unix.ftruncate fd total_size;
-  Make.format fd ~total_sectors;
+  Fs.format fd ~total_sectors;
   let* t = Fs.create fd in
   let* () = restore_tree t "/" tree in
   Fmt.pr "Defragmented %s: %d file(s), %d directory(ies)\n" fpath n_files n_dirs;

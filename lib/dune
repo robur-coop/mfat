@@ -1,4 +1,13 @@
 (library
  (name mfat)
+ (modules mfat)
  (public_name mfat)
+ (wrapped false)
  (libraries fmt cachet bstr))
+
+(library
+ (name mfat_bos)
+ (modules mfat_bos)
+ (public_name mfat.bos)
+ (wrapped false)
+ (libraries logs fpath mfat))
