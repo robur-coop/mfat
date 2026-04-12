@@ -727,6 +727,7 @@ end
 module type S = sig
   type blk
 
+  val format : blk -> total_sectors:int -> unit
   val create : blk -> (blk t, [> `Msg of string ]) result
   val ls : blk t -> string -> (entry list, [> `Msg of string ]) result
   val read : blk t -> string -> (string, [> `Msg of string ]) result
@@ -744,6 +745,85 @@ module Make (Blk : BLOCK) : S with type blk = Blk.t = struct
   module Fat = Fat (Blk)
   module Dir = Dir (Blk)
   module Path = Path (Blk)
+
+  let format blk ~total_sectors =
+    let bytes_per_sector = 512 in
+    let size_mb = total_sectors * bytes_per_sector / (1024 * 1024) in
+    let spc =
+      if size_mb <= 260 then 1
+      else if size_mb <= 8192 then 8
+      else if size_mb <= 16384 then 16
+      else if size_mb <= 32768 then 32
+      else 64
+    in
+    let reserved_sectors = 32 in
+    let num_fats = 2 in
+    let tmp1 = total_sectors - reserved_sectors in
+    let tmp2 = ((256 * spc) + num_fats) / 2 in
+    let fat_sz = (tmp1 + tmp2 - 1) / tmp2 in
+    let boot = Bstr.create bytes_per_sector in
+    Bstr.fill boot '\000';
+    Bstr.set_uint8 boot 0 0xEB;
+    Bstr.set_uint8 boot 1 0x58;
+    Bstr.set_uint8 boot 2 0x90;
+    Bstr.blit_from_string "MFAT    " ~src_off:0 boot ~dst_off:3 ~len:8;
+    Bstr.set_uint16_le boot 11 bytes_per_sector;
+    Bstr.set_uint8 boot 13 spc;
+    Bstr.set_uint16_le boot 14 reserved_sectors;
+    Bstr.set_uint8 boot 16 num_fats;
+    Bstr.set_uint16_le boot 17 0;
+    Bstr.set_uint16_le boot 19 0;
+    Bstr.set_uint8 boot 21 0xF8;
+    Bstr.set_uint16_le boot 22 0;
+    Bstr.set_uint16_le boot 24 63;
+    Bstr.set_uint16_le boot 26 255;
+    Bstr.set_int32_le boot 28 0l;
+    Bstr.set_int32_le boot 32 (Int32.of_int total_sectors);
+    Bstr.set_int32_le boot 36 (Int32.of_int fat_sz);
+    Bstr.set_uint16_le boot 40 0;
+    Bstr.set_uint16_le boot 42 0;
+    Bstr.set_int32_le boot 44 2l;
+    Bstr.set_uint16_le boot 48 1;
+    Bstr.set_uint16_le boot 50 6;
+    Bstr.set_uint8 boot 64 0x80;
+    Bstr.set_uint8 boot 66 0x29;
+    Bstr.set_int32_le boot 67 0x12345678l;
+    Bstr.blit_from_string "NO NAME    " ~src_off:0 boot ~dst_off:71 ~len:11;
+    Bstr.blit_from_string "FAT32   " ~src_off:0 boot ~dst_off:82 ~len:8;
+    Bstr.set_uint8 boot 510 0x55;
+    Bstr.set_uint8 boot 511 0xAA;
+    Blk.write blk ~dst_off:0 boot;
+    let fsinfo = Bstr.create bytes_per_sector in
+    Bstr.fill fsinfo '\000';
+    Bstr.set_int32_le fsinfo 0 0x41615252l;
+    Bstr.set_int32_le fsinfo 484 0x61417272l;
+    let total_data_clusters =
+      (total_sectors - reserved_sectors - (num_fats * fat_sz)) / spc
+    in
+    Bstr.set_int32_le fsinfo 488 (Int32.of_int (total_data_clusters - 1));
+    Bstr.set_int32_le fsinfo 492 3l;
+    Bstr.set_int32_le fsinfo 508 0xAA550000l;
+    Blk.write blk ~dst_off:bytes_per_sector fsinfo;
+    Blk.write blk ~dst_off:(6 * bytes_per_sector) boot;
+    Blk.write blk ~dst_off:(7 * bytes_per_sector) fsinfo;
+    let fat_offset = reserved_sectors * bytes_per_sector in
+    let fat_first = Bstr.create bytes_per_sector in
+    Bstr.fill fat_first '\000';
+    Bstr.set_int32_le fat_first 0 0x0FFFFFF8l;
+    Bstr.set_int32_le fat_first 4 0x0FFFFFFFl;
+    Bstr.set_int32_le fat_first 8 0x0FFFFFFFl;
+    Blk.write blk ~dst_off:fat_offset fat_first;
+    let fat2_offset = fat_offset + (fat_sz * bytes_per_sector) in
+    Blk.write blk ~dst_off:fat2_offset fat_first;
+    let data_offset =
+      (reserved_sectors + (num_fats * fat_sz)) * bytes_per_sector
+    in
+    let cluster_size = spc * bytes_per_sector in
+    let zero = Bstr.create bytes_per_sector in
+    Bstr.fill zero '\000';
+    for i = 0 to (cluster_size / bytes_per_sector) - 1 do
+      Blk.write blk ~dst_off:(data_offset + (i * bytes_per_sector)) zero
+    done
 
   let create blk =
     let pagesize = Blk.pagesize blk in

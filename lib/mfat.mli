@@ -12,6 +12,7 @@ end
 module type S = sig
   type blk
 
+  val format : blk -> total_sectors:int -> unit
   val create : blk -> (blk t, [> `Msg of string ]) result
   val ls : blk t -> string -> (entry list, [> `Msg of string ]) result
   val read : blk t -> string -> (string, [> `Msg of string ]) result
