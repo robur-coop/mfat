@@ -3,10 +3,6 @@
  * Copyright (c) 2026 Romain Calascibetta <romain.calascibetta@gmail.com>
  *)
 
-[@@@warning "-27"]
-[@@@warning "-32"]
-[@@@warning "-34"]
-
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
 let src = Logs.Src.create "mfat.fancy"
@@ -34,16 +30,6 @@ module Pat = struct
 
   type lexeme = Lit of string | Var of string
   type t = lexeme list
-
-  let empty = []
-
-  let dom p =
-    let add acc = function Lit _ -> acc | Var v -> S.add v acc in
-    List.fold_left add S.empty p
-
-  let equal p p' = p = p'
-  let compare p p' = Stdlib.compare p p'
-
   type parse_state = S_lit | S_dollar | S_var
 
   let of_string s =
@@ -110,56 +96,11 @@ module Pat = struct
     in
     List.iter add p; Buffer.contents b
 
-  let escape_dollar s =
-    let len = String.length s in
-    let max_idx = len - 1 in
-    let rec escaped_len i l =
-      if i > max_idx then l
-      else
-        match String.unsafe_get s i with
-        | '$' -> escaped_len (i + 1) (l + 2)
-        | _ -> escaped_len (i + 1) (l + 1)
-    in
-    let escaped_len = escaped_len 0 0 in
-    if escaped_len = len then s
-    else
-      let b = Bytes.create escaped_len in
-      let rec loop i k =
-        if i > max_idx then Bytes.unsafe_to_string b
-        else
-          match String.unsafe_get s i with
-          | '$' ->
-              Bytes.unsafe_set b k '$';
-              Bytes.unsafe_set b (k + 1) '$';
-              loop (i + 1) (k + 2)
-          | c ->
-              Bytes.unsafe_set b k c;
-              loop (i + 1) (k + 1)
-      in
-      loop 0 0
-
-  let rec pp ppf = function
-    | [] -> ()
-    | Lit l :: p ->
-        Fmt.string ppf (escape_dollar l);
-        pp ppf p
-    | Var v :: p -> Fmt.pf ppf "$(%s)" v; pp ppf p
-
-  let dump ppf p =
-    let pp ppf = function
-      | [] -> ()
-      | Lit l :: p ->
-          Fmt.string ppf (String.escaped (escape_dollar l));
-          pp ppf p
-      | Var v :: p -> Fmt.pf ppf "$(%s)" v; pp ppf p
-    in
-    Fmt.pf ppf "\"%a\"" pp p
-
   (* Substitution *)
 
   type defs = string M.t
 
-  let subst ?(undef = fun _ -> None) defs p =
+  let _subst ?(undef = fun _ -> None) defs p =
     let subst acc = function
       | Lit _ as l -> l :: acc
       | Var v as var -> (
@@ -172,7 +113,7 @@ module Pat = struct
     in
     List.(rev (fold_left subst [] p))
 
-  let format ?(undef = fun _ -> "") defs p =
+  let _format ?(undef = fun _ -> "") defs p =
     let b = Buffer.create 255 in
     let add = function
       | Lit l -> Buffer.add_string b l
@@ -217,7 +158,7 @@ module Pat = struct
     let init, no_env =
       match env with
       | None -> (Some M.empty, true)
-      | Some m as init -> (init, false)
+      | Some _ as init -> (init, false)
     in
     let rec loop pos = function
       | [] -> if pos = String.length s then init else None
@@ -269,7 +210,7 @@ module Make (Blk : Mfat.BLOCK) = struct
     let path = of_fpath ~where:"exists" path in
     match stat t path with Ok _ -> Ok true | Error _ -> Ok false
 
-  let _file_must_exist t filepath =
+  let file_must_exist t filepath =
     let filepath' = of_fpath ~where:"file_must_exist" filepath in
     match stat t filepath' with
     | Ok { Mfat.is_dir= false; _ } -> Ok filepath
@@ -423,11 +364,16 @@ module Make (Blk : Mfat.BLOCK) = struct
     let readdir t d =
       match ls t (of_fpath ~where:"readdir" d) with
       | Ok entries ->
-          let fn { Mfat.name; _ } = name in
-          Ok (List.map fn entries)
+          let fn { Mfat.name; _ } =
+            if name = "." || name = ".." then None else Some name
+          in
+          let names = List.filter_map fn entries in
+          Ok names
       | Error _ as err -> err
     in
     errfn err readdir ~backup:[]
+
+  let is_dotfile bname = String.length bname > 0 && bname.[0] = '.'
 
   let log path = function
     | Ok _ -> assert false
@@ -435,7 +381,8 @@ module Make (Blk : Mfat.BLOCK) = struct
         Log.err (fun m -> m "Mfat.fold (%a): %s" Fpath.pp path msg);
         Ok ()
 
-  let fold ?(err = log) ?(elements = `Any) ?(traverse = `Any) t fn acc paths =
+  let fold ?(err = log) ?(dotfiles = false) ?(elements = `Any)
+      ?(traverse = `Any) t fn acc paths =
     try
       let do_traverse = do_traverse_fn err traverse in
       let is_element = is_element_fn err elements in
@@ -449,7 +396,10 @@ module Make (Blk : Mfat.BLOCK) = struct
         in
         (acc, to_traverse)
       in
-      let dir_child d acc bname = process_path Fpath.(d / bname) acc in
+      let dir_child d acc bname =
+        if (not dotfiles) && is_dotfile bname then acc
+        else process_path Fpath.(d / bname) acc
+      in
       let rec go acc = function
         | (d :: ds) :: up ->
             let childs = readdir t d in
@@ -461,10 +411,159 @@ module Make (Blk : Mfat.BLOCK) = struct
         | [] :: up -> go acc up
         | _ -> assert false
       in
-      let init acc path = process_path path acc in
+      let init acc path =
+        let base = Fpath.(basename (normalize path)) in
+        if (not dotfiles) && is_dotfile base then acc else process_path path acc
+      in
       let acc, to_traverse = List.fold_left init (acc, []) paths in
       Ok (go acc (to_traverse :: []))
     with Fold_error err -> Error err
 
-  module File = struct end
+  module File = struct
+    let exists t path = file_exists t path
+    let must_exist t filepath = file_must_exist t filepath
+    let delete t ?must_exist path = delete_file t ?must_exist path
+
+    let read t path =
+      let path' = of_fpath ~where:"File.read" path in
+      let* chunks = to_seq t path' in
+      let buf = Buffer.create 4096 in
+      Seq.iter (Buffer.add_string buf) chunks;
+      Ok (Buffer.contents buf)
+
+    let read_lines t path =
+      let path' = of_fpath ~where:"File.read_lines" path in
+      let* chunks = to_seq t path' in
+      let buf = Buffer.create 4096 in
+      Seq.iter (Buffer.add_string buf) chunks;
+      Ok (String.split_on_char '\n' (Buffer.contents buf))
+
+    let fold_lines f acc t path =
+      let path' = of_fpath ~where:"File.fold_lines" path in
+      let* chunks = to_seq t path' in
+      let buf = Buffer.create 4096 in
+      Seq.iter (Buffer.add_string buf) chunks;
+      let lines = String.split_on_char '\n' (Buffer.contents buf) in
+      Ok (List.fold_left (fun a l -> f l a) acc lines)
+
+    let write t path content =
+      let path' = of_fpath ~where:"File.write" path in
+      write t path' content
+
+    let write_lines t path lines =
+      let content = String.concat "\n" lines in
+      write t path content
+  end
+
+  module Dir = struct
+    let exists t path = dir_exists t path
+    let must_exist t path = dir_must_exist t path
+
+    let create t ?(path = true) dir =
+      let segs = Fpath.segs dir in
+      let segs = List.filter (fun str -> str <> "") segs in
+      if path then begin
+        let rec go current created = function
+          | [] -> Ok created
+          | seg :: rest ->
+              let next =
+                match current with
+                | None -> Fpath.v seg
+                | Some p -> Fpath.(p / seg)
+              in
+              let* is_dir = dir_exists t next in
+              if is_dir then go (Some next) created rest
+              else
+                let* is_file = file_exists t next in
+                if is_file then error_msgf "%a: not a directory" Fpath.pp next
+                else
+                  let* () = mkdir t (of_fpath ~where:"Dir.create" next) in
+                  go (Some next) true rest
+        in
+        go None false segs
+      end
+      else begin
+        let* is_dir = dir_exists t dir in
+        if is_dir then Ok false
+        else
+          let* is_file = file_exists t dir in
+          if is_file then error_msgf "%a: not a directory" Fpath.pp dir
+          else
+            let* () = mkdir t (of_fpath ~where:"Dir.create" dir) in
+            Ok true
+      end
+
+    let delete t ?must_exist ?recurse path =
+      delete_dir t ?must_exist ?recurse path
+
+    let contents t ?(rel = false) dir =
+      let dir' = of_fpath ~where:"Dir.contents" dir in
+      let* entries = ls t dir' in
+      let to_fpath entry =
+        let name = entry.Mfat.name in
+        let child = Fpath.v name in
+        if entry.Mfat.is_dir then
+          if rel then Fpath.to_dir_path child
+          else Fpath.(to_dir_path (dir // child))
+        else if rel then child
+        else Fpath.(dir // child)
+      in
+      Ok (List.map to_fpath entries)
+
+    let fold_contents ?err ?dotfiles ?elements ?traverse t f acc dir =
+      let* paths = contents t ~rel:false dir in
+      fold ?err ?dotfiles ?elements ?traverse t f acc paths
+  end
+
+  let matches t ?(dotfiles = false) pat =
+    let parent = Fpath.parent pat in
+    let base = Fpath.basename pat in
+    match Pat.of_string base with
+    | Error _ as e -> e
+    | Ok pat ->
+        let* entries = Dir.contents t ~rel:false parent in
+        let entries =
+          if not dotfiles then
+            List.filter
+              (fun p ->
+                let b = Fpath.basename p in
+                String.length b = 0 || b.[0] <> '.')
+              entries
+          else entries
+        in
+        let matching =
+          List.filter
+            (fun p ->
+              let b = Fpath.basename (Fpath.rem_empty_seg p) in
+              Pat.matches pat b)
+            entries
+        in
+        Ok matching
+
+  let query t ?(dotfiles = false) ?(init = M.empty) pat =
+    let parent = Fpath.parent pat in
+    let base = Fpath.basename pat in
+    match Pat.of_string base with
+    | Error _ as e -> e
+    | Ok pat ->
+        let* entries = Dir.contents t ~rel:false parent in
+        let entries =
+          if not dotfiles then
+            let fn path =
+              let bname = Fpath.basename path in
+              String.length bname = 0 || bname.[0] <> '.'
+            in
+            List.filter fn entries
+          else entries
+        in
+        let results =
+          let fn path =
+            let bname = Fpath.basename (Fpath.rem_empty_seg path) in
+            match Pat.query ~init pat bname with
+            | Some defs -> Some (path, defs)
+            | None -> None
+          in
+          List.filter_map fn entries
+        in
+        Ok results
 end
