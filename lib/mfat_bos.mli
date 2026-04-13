@@ -25,6 +25,9 @@ end
 module Make (Blk : Mfat.BLOCK) : sig
   type blk = Blk.t
 
+  val format : blk -> total_sectors:int -> unit
+  val create : blk -> (blk Mfat.t, [> `Msg of string ]) result
+
   (** {1:path Path operations} *)
 
   val exists : blk Mfat.t -> Fpath.t -> (bool, 'err) result
