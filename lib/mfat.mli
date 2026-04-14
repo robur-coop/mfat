@@ -18,7 +18,10 @@ module type S = sig
   val read : blk t -> string -> (string, [> `Msg of string ]) result
   val to_seq : blk t -> string -> (string Seq.t, [> `Msg of string ]) result
   val write : blk t -> string -> string -> (unit, [> `Msg of string ]) result
-  val of_seq : blk t -> string -> string Seq.t -> (unit, [> `Msg of string ]) result
+
+  val of_seq :
+    blk t -> string -> string Seq.t -> (unit, [> `Msg of string ]) result
+
   val mkdir : blk t -> string -> (unit, [> `Msg of string ]) result
   val remove : blk t -> string -> (unit, [> `Msg of string ]) result
   val exists : blk t -> string -> bool
