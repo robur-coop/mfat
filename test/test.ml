@@ -198,6 +198,18 @@ let test_path_stat () =
   Alcotest.(check bool) "is not dir" false entry.Mfat.is_dir;
   Alcotest.(check int32) "size" 4l entry.Mfat.size
 
+let filepath = Alcotest.testable Fpath.pp Fpath.equal
+
+let test_root () =
+  let _blk, t = make_fs () in
+  ok_or_fail (B.File.write t (Fpath.v "/foo.txt") "data");
+  ok_or_fail (B.File.write t (Fpath.v "/bar.txt") "data");
+  let fn x r = x :: r in
+  let lst = ok_or_fail (B.fold t ~elements:`Files fn [] [ Fpath.v "/" ]) in
+  Alcotest.(check (list filepath))
+    "files" lst
+    [ Fpath.v "/bar.txt"; Fpath.v "/foo.txt" ]
+
 let () =
   Alcotest.run "mfat"
     [
@@ -232,5 +244,6 @@ let () =
           Alcotest.test_case "exists" `Quick test_path_exists
         ; Alcotest.test_case "delete" `Quick test_path_delete
         ; Alcotest.test_case "stat" `Quick test_path_stat
+        ; Alcotest.test_case "root" `Quick test_root
         ] )
     ]

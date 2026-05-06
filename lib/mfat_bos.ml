@@ -13,15 +13,17 @@ module S = Set.Make (String)
 module M = Map.Make (String)
 
 let of_fpath ~where path =
-  let segs = Fpath.segs path in
-  let trim = List.drop_while (( = ) "") in
-  let segs = trim segs in
-  let segs = List.rev (trim (List.rev segs)) in
-  match segs with
-  | [] -> Fmt.failwith "%s: empty path: %a" where Fpath.pp path
-  | segs when List.exists (( = ) "") segs ->
-      Fmt.failwith "%s: empty segment: %a" where Fpath.pp path
-  | segs -> String.concat "/" segs
+  if Fpath.is_root path then ""
+  else
+    let segs = Fpath.segs path in
+    let trim = List.drop_while (( = ) "") in
+    let segs = trim segs in
+    let segs = List.rev (trim (List.rev segs)) in
+    match segs with
+    | [] -> Fmt.failwith "%s: empty path: %a" where Fpath.pp path
+    | segs when List.exists (( = ) "") segs ->
+        Fmt.failwith "%s: empty segment: %a" where Fpath.pp path
+    | segs -> String.concat "/" segs
 
 module Pat = struct
   let err_malformed_pat = Fmt.str "malformed named string pattern: %S"
