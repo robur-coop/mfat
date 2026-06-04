@@ -740,6 +740,7 @@ module type S = sig
   val format : blk -> total_sectors:int -> unit
   val create : blk -> (blk t, [> `Msg of string ]) result
   val available : blk t -> int
+  val capacity : blk t -> int
   val ls : blk t -> string -> (entry list, [> `Msg of string ]) result
   val read : blk t -> string -> (string, [> `Msg of string ]) result
   val to_seq : blk t -> string -> (string Seq.t, [> `Msg of string ]) result
@@ -854,6 +855,10 @@ module Make (Blk : BLOCK) : S with type blk = Blk.t = struct
   let available t =
     let free_clusters = Fat.count_free_clusters t.cache t.bpb in
     free_clusters * Bpb.cluster_size t.bpb
+
+  let capacity t =
+    let data_clusters = Fat.total_data_clusters t.bpb in
+    (data_clusters - 1) * Bpb.cluster_size t.bpb
 
   let ls t path =
     let parts = Path.split path in
