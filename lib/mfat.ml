@@ -117,14 +117,14 @@ module Fat (Blk : BLOCK) = struct
     in
     go start
 
+  let total_data_clusters bpb =
+    (Int32.to_int bpb.total_sectors_32
+    - bpb.reserved_sectors
+    - (bpb.num_fats * Int32.to_int bpb.fat_size_32))
+    / bpb.sectors_per_cluster
+
   let alloc_cluster blk cache bpb =
-    let total_data_clusters =
-      (Int32.to_int bpb.total_sectors_32
-      - bpb.reserved_sectors
-      - (bpb.num_fats * Int32.to_int bpb.fat_size_32))
-      / bpb.sectors_per_cluster
-    in
-    let max_cluster = total_data_clusters + 1 in
+    let max_cluster = total_data_clusters bpb + 1 in
     let rec search i =
       if i > max_cluster then error_msgf "no free cluster"
       else
@@ -135,6 +135,16 @@ module Fat (Blk : BLOCK) = struct
         else search (i + 1)
     in
     search 2
+
+  let count_free_clusters cache bpb =
+    let max_cluster = total_data_clusters bpb + 1 in
+    let rec go acc idx =
+      if idx > max_cluster then acc
+      else
+        let v = read_entry cache bpb (Int32.of_int idx) in
+        go (if v = free then succ acc else acc) (succ idx)
+    in
+    go 0 2
 
   let free_chain blk cache bpb start =
     let rec go cluster =
@@ -729,6 +739,7 @@ module type S = sig
 
   val format : blk -> total_sectors:int -> unit
   val create : blk -> (blk t, [> `Msg of string ]) result
+  val available : blk t -> int
   val ls : blk t -> string -> (entry list, [> `Msg of string ]) result
   val read : blk t -> string -> (string, [> `Msg of string ]) result
   val to_seq : blk t -> string -> (string Seq.t, [> `Msg of string ]) result
@@ -839,6 +850,10 @@ module Make (Blk : BLOCK) : S with type blk = Blk.t = struct
     let cache = Cachet.make ~pagesize ~map blk in
     let* bpb = Bpb.parse cache in
     Ok { blk; cache; bpb }
+
+  let available t =
+    let free_clusters = Fat.count_free_clusters t.cache t.bpb in
+    free_clusters * Bpb.cluster_size t.bpb
 
   let ls t path =
     let parts = Path.split path in
