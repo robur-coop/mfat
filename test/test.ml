@@ -176,6 +176,30 @@ let test_dir_fold_contents () =
   in
   Alcotest.(check int) "file count" 2 count
 
+let test_dir_reuse_middle_slot () =
+  (* check if we can delete an entry in the middle of a directory and keep an 
+     access to subsequent entries. *)
+  let _blk, t = make_fs () in
+  ok_or_fail (B.File.write t (Fpath.v "a.txt") "AAAA");
+  ok_or_fail (B.File.write t (Fpath.v "b.txt") "BBBB");
+  ok_or_fail (B.File.write t (Fpath.v "c.txt") "CCCC");
+  let _ = ok_or_fail (B.Dir.create t (Fpath.v "sub")) in
+  (* Free the middle slot, then place a new entry that reuses it. *)
+  ok_or_fail (B.delete t (Fpath.v "b.txt"));
+  ok_or_fail (B.File.write t (Fpath.v "d.txt") "DDDDDDDD");
+  let entries = ok_or_fail (B.Dir.contents t (Fpath.v "/")) in
+  let names =
+    List.map (fun p -> Fpath.basename (Fpath.rem_empty_seg p)) entries
+    |> List.sort String.compare
+  in
+  Alcotest.(check (list string))
+    "surviving entries"
+    [ "a.txt"; "c.txt"; "d.txt"; "sub" ]
+    names;
+  Alcotest.(check string)
+    "c.txt still readable" "CCCC"
+    (ok_or_fail (B.File.read t (Fpath.v "c.txt")))
+
 let test_path_exists () =
   let _blk, t = make_fs () in
   let no = ok_or_fail (B.exists t (Fpath.v "absent")) in
@@ -238,6 +262,8 @@ let () =
         ; Alcotest.test_case "delete" `Quick test_dir_delete
         ; Alcotest.test_case "delete recurse" `Quick test_dir_delete_recurse
         ; Alcotest.test_case "fold_contents" `Quick test_dir_fold_contents
+        ; Alcotest.test_case "reuse middle slot" `Quick
+            test_dir_reuse_middle_slot
         ] )
     ; ( "path"
       , [
