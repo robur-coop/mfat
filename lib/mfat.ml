@@ -117,14 +117,14 @@ module Fat (Blk : BLOCK) = struct
     in
     go start
 
+  let total_data_clusters bpb =
+    (Int32.to_int bpb.total_sectors_32
+    - bpb.reserved_sectors
+    - (bpb.num_fats * Int32.to_int bpb.fat_size_32))
+    / bpb.sectors_per_cluster
+
   let alloc_cluster blk cache bpb =
-    let total_data_clusters =
-      (Int32.to_int bpb.total_sectors_32
-      - bpb.reserved_sectors
-      - (bpb.num_fats * Int32.to_int bpb.fat_size_32))
-      / bpb.sectors_per_cluster
-    in
-    let max_cluster = total_data_clusters + 1 in
+    let max_cluster = total_data_clusters bpb + 1 in
     let rec search i =
       if i > max_cluster then error_msgf "no free cluster"
       else
@@ -135,6 +135,16 @@ module Fat (Blk : BLOCK) = struct
         else search (i + 1)
     in
     search 2
+
+  let count_free_clusters cache bpb =
+    let max_cluster = total_data_clusters bpb + 1 in
+    let rec go acc idx =
+      if idx > max_cluster then acc
+      else
+        let v = read_entry cache bpb (Int32.of_int idx) in
+        go (if v = free then succ acc else acc) (succ idx)
+    in
+    go 0 2
 
   let free_chain blk cache bpb start =
     let rec go cluster =
@@ -508,39 +518,54 @@ module Dir (Blk : BLOCK) = struct
     Blk.write blk ~dst_off:page_off buf;
     Cachet.invalidate cache ~off:page_off ~len:pagesize
 
-  (* Find N contiguous free slots in a directory, returns offset of the first *)
+  (* Find N consecutive free slots in a directory, returns offsets of slots and the termination *)
   let find_free_slots blk cache bpb dir_cluster n =
-    let clusters = Fat.follow_chain cache bpb dir_cluster in
     let cluster_sz = Bpb.cluster_size bpb in
-    let result = ref None in
-    let consecutive = ref 0 in
-    let first_off = ref 0 in
-    let fn cl =
-      if !result = None then
-        let base = Bpb.cluster_offset bpb cl in
-        let count = cluster_sz / entry_size in
-        for i = 0 to count - 1 do
-          if !result = None then begin
-            let off = base + (i * entry_size) in
-            let first_byte = Cachet.get_uint8 cache off in
-            if first_byte = 0x00 || first_byte = deleted_marker then begin
-              if !consecutive = 0 then first_off := off;
-              incr consecutive;
-              if !consecutive >= n then result := Some !first_off
-            end
-            else consecutive := 0
-          end
-        done
+    let per_cluster = cluster_sz / entry_size in
+    let chain_offsets () =
+      let clusters = Fat.follow_chain cache bpb dir_cluster in
+      let all =
+        let fn cl =
+          let base = Bpb.cluster_offset bpb cl in
+          List.init per_cluster (fun idx -> base + (idx * entry_size))
+        in
+        List.concat_map fn clusters
+      in
+      (clusters, all)
     in
-    List.iter fn clusters;
-    match !result with
-    | Some off -> Ok off
+    let scan offs =
+      let rec go run crossed past_term = function
+        | off :: rest ->
+            let b0 = Cachet.get_uint8 cache off in
+            let is_term = b0 = 0x00 in
+            let free = past_term || is_term || b0 = deleted_marker in
+            if free then begin
+              let run = off :: run in
+              let crossed = crossed || is_term || past_term in
+              if List.length run >= n then
+                let term =
+                  if crossed then
+                    match rest with x :: _ -> Some x | [] -> None
+                  else None
+                in
+                Some (List.rev run, term)
+              else go run crossed (past_term || is_term) rest
+            end
+            else go [] false past_term rest
+        | [] -> None
+      in
+      go [] false false offs
+    in
+    let _, all = chain_offsets () in
+    match scan all with
+    | Some result -> Ok result
     | None -> begin
-        (* Need to extend the directory: allocate a new cluster *)
+        let clusters, _ = chain_offsets () in
         let last_cluster = List.nth clusters (List.length clusters - 1) in
         match Fat.alloc_cluster blk cache bpb with
         | Error _ as e -> e
-        | Ok new_cl ->
+        | Ok new_cl -> begin
+            (* Need to extend the directory: allocate a new cluster *)
             Fat.write_entry blk cache bpb last_cluster new_cl;
             (* Zero out the new cluster *)
             let pagesize = Blk.pagesize blk in
@@ -553,11 +578,24 @@ module Dir (Blk : BLOCK) = struct
               Blk.write blk ~dst_off:off buf;
               Cachet.invalidate cache ~off ~len:pagesize
             done;
-            (* If still not enough room, we'd need to allocate more,
-               but a single cluster should hold enough for reasonable names *)
-            if cluster_sz / entry_size >= n then Ok base
-            else error_msgf "name too long for directory extension"
+            let _, all = chain_offsets () in
+            match scan all with
+            | Some result -> Ok result
+            | None -> error_msgf "directory full: cannot place %d entries" n
+          end
       end
+
+  (* Re-assert the end-of-directory terminator at [off] if it isn't already 0x00 *)
+  let mark_end blk cache off =
+    if Cachet.get_uint8 cache off <> 0x00 then begin
+      let pagesize = Blk.pagesize blk in
+      let page_off = off / pagesize * pagesize in
+      let buf = Bstr.create pagesize in
+      Blk.read blk ~src_off:page_off buf;
+      Bstr.set_uint8 buf (off - page_off) 0x00;
+      Blk.write blk ~dst_off:page_off buf;
+      Cachet.invalidate cache ~off:page_off ~len:pagesize
+    end
 
   let add_entry blk cache bpb dir_cluster ~name ~attr ~first_cluster ~file_size
       =
@@ -567,30 +605,28 @@ module Dir (Blk : BLOCK) = struct
       let chunks = split_lfn_name name in
       let num_lfn = List.length chunks in
       let total_slots = num_lfn + 1 in
-      let* base_off = find_free_slots blk cache bpb dir_cluster total_slots in
-      (* Write LFN entries in reverse order (highest ordinal first) *)
+      let* offsets, term =
+        find_free_slots blk cache bpb dir_cluster total_slots
+      in
+      let offsets = Array.of_list offsets in
       let fn idx chunk =
         let ord = num_lfn - idx in
         let is_last = idx = 0 in
-        let off = base_off + (idx * entry_size) in
-        write_lfn_entry_at blk cache off ~ord ~checksum:chk ~chars:chunk
-          ~is_last
+        write_lfn_entry_at blk cache offsets.(idx) ~ord ~checksum:chk
+          ~chars:chunk ~is_last
       in
-      (* LFN entries are stored in reverse order on disk.
-         Entry with highest ordinal comes first, lowest ordinal last,
-         then the 8.3 entry follows. *)
       List.iteri fn (List.rev chunks);
-      (* Write the 8.3 entry after all LFN entries *)
-      let sfn_off = base_off + (num_lfn * entry_size) in
-      write_entry_at blk cache sfn_off ~name_8 ~ext_3 ~attr ~first_cluster
-        ~file_size;
+      write_entry_at blk cache offsets.(num_lfn) ~name_8 ~ext_3 ~attr
+        ~first_cluster ~file_size;
+      Option.iter (mark_end blk cache) term;
       Ok ()
     end
     else begin
       let name_8, ext_3 = to_8_3 name in
-      let* off = find_free_slots blk cache bpb dir_cluster 1 in
-      write_entry_at blk cache off ~name_8 ~ext_3 ~attr ~first_cluster
-        ~file_size;
+      let* offsets, term = find_free_slots blk cache bpb dir_cluster 1 in
+      write_entry_at blk cache (List.hd offsets) ~name_8 ~ext_3 ~attr
+        ~first_cluster ~file_size;
+      Option.iter (mark_end blk cache) term;
       Ok ()
     end
 
@@ -729,6 +765,8 @@ module type S = sig
 
   val format : blk -> total_sectors:int -> unit
   val create : blk -> (blk t, [> `Msg of string ]) result
+  val available : blk t -> int
+  val capacity : blk t -> int
   val ls : blk t -> string -> (entry list, [> `Msg of string ]) result
   val read : blk t -> string -> (string, [> `Msg of string ]) result
   val to_seq : blk t -> string -> (string Seq.t, [> `Msg of string ]) result
@@ -839,6 +877,14 @@ module Make (Blk : BLOCK) : S with type blk = Blk.t = struct
     let cache = Cachet.make ~pagesize ~map blk in
     let* bpb = Bpb.parse cache in
     Ok { blk; cache; bpb }
+
+  let available t =
+    let free_clusters = Fat.count_free_clusters t.cache t.bpb in
+    free_clusters * Bpb.cluster_size t.bpb
+
+  let capacity t =
+    let data_clusters = Fat.total_data_clusters t.bpb in
+    (data_clusters - 1) * Bpb.cluster_size t.bpb
 
   let ls t path =
     let parts = Path.split path in

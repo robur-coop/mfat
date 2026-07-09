@@ -27,6 +27,8 @@ module Make (Blk : Mfat.BLOCK) : sig
 
   val format : blk -> total_sectors:int -> unit
   val create : blk -> (blk Mfat.t, [> `Msg of string ]) result
+  val available : blk Mfat.t -> int
+  val capacity : blk Mfat.t -> int
 
   (** {1:path Path operations} *)
 

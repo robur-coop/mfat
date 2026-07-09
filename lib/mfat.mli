@@ -14,11 +14,16 @@ module type S = sig
 
   val format : blk -> total_sectors:int -> unit
   val create : blk -> (blk t, [> `Msg of string ]) result
+  val available : blk t -> int
+  val capacity : blk t -> int
   val ls : blk t -> string -> (entry list, [> `Msg of string ]) result
   val read : blk t -> string -> (string, [> `Msg of string ]) result
   val to_seq : blk t -> string -> (string Seq.t, [> `Msg of string ]) result
   val write : blk t -> string -> string -> (unit, [> `Msg of string ]) result
-  val of_seq : blk t -> string -> string Seq.t -> (unit, [> `Msg of string ]) result
+
+  val of_seq :
+    blk t -> string -> string Seq.t -> (unit, [> `Msg of string ]) result
+
   val mkdir : blk t -> string -> (unit, [> `Msg of string ]) result
   val remove : blk t -> string -> (unit, [> `Msg of string ]) result
   val exists : blk t -> string -> bool
